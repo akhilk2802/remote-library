@@ -54,16 +54,16 @@
 package remote
 
 import (
+	"bytes"
+	"encoding/gob"
 	"errors"
+	"fmt"
 	"io"
 	"math/rand"
 	"net"
 	"reflect"
-	"time"
-	"encoding/gob"
-	"fmt"
-	"bytes"
 	"sync"
+	"time"
 )
 
 // LeakySocket
@@ -93,7 +93,7 @@ func NewLeakySocket(conn net.Conn, lossy bool, delayed bool) *LeakySocket {
 	ls.isDelayed = delayed
 	ls.msDelay = 2
 	ls.usDelay = 0
-	ls.msTimeout = 150
+	ls.msTimeout = 15
 	ls.usTimeout = 0
 	ls.lossRate = 0.05
 
@@ -105,44 +105,65 @@ func NewLeakySocket(conn net.Conn, lossy bool, delayed bool) *LeakySocket {
 // coupled with time.Sleep to emulate a timeout
 func (ls *LeakySocket) SendObject(obj []byte) (bool, error) {
 	if obj == nil {
+		fmt.Println("SendObject: obj is nil, returning true")
 		return true, nil
 	}
 
 	if ls.s != nil {
 		rand.Seed(time.Now().UnixNano())
 		if ls.isLossy && rand.Float32() < ls.lossRate {
+			fmt.Println("SendObject: Simulating packet loss")
 			time.Sleep(time.Duration(ls.msTimeout)*time.Millisecond + time.Duration(ls.usTimeout)*time.Microsecond)
 			return false, nil
 		} else {
 			if ls.isDelayed {
+				fmt.Println("SendObject: Simulating delay")
 				time.Sleep(time.Duration(ls.msDelay)*time.Millisecond + time.Duration(ls.usDelay)*time.Microsecond)
 			}
-			_, err := ls.s.Write(obj)
+			fmt.Println("SendObject: Sending data")
+			n, err := ls.s.Write(obj)
 			if err != nil {
+				fmt.Println("SendObject Write error:", err)
 				return false, errors.New("SendObject Write error: " + err.Error())
 			}
+			fmt.Printf("SendObject: Sent %d bytes\n", n)
 			return true, nil
 		}
 	}
+	fmt.Println("SendObject failed, nil socket")
 	return false, errors.New("SendObject failed, nil socket")
 }
 
 // receive a byte-string over the socket connection.
 // no significant change to normal socket receive.
 func (ls *LeakySocket) RecvObject() ([]byte, error) {
+	fmt.Println("Inside the for loop, in RecvObject")
 	if ls.s != nil {
 		buf := make([]byte, 4096)
+		// var buf []byte
 		n := 0
 		var err error
 		for n <= 0 {
+			ls.s.SetReadDeadline(time.Now().Add(10 * time.Second))
+			fmt.Println("Waiting to read from socket")
 			n, err = ls.s.Read(buf)
 			if n > 0 {
+				fmt.Printf("Read %d bytes\n", n)
+				fmt.Println("Priniting from RecvObject :", buf[:n])
+				// return nil, nil
 				return buf[:n], nil
 			}
 			if err != nil {
 				if err != io.EOF {
+					fmt.Println("RecvObject Read error:", err)
 					return nil, errors.New("RecvObject Read error: " + err.Error())
 				}
+				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+					fmt.Println("Read timeout")
+					return nil, errors.New("RecvObject Read timeout")
+				}
+				fmt.Println("RecvObject Read error:", err)
+				return nil, errors.New("RecvObject Read error: " + err.Error())
 			}
 		}
 	}
@@ -218,15 +239,14 @@ type ReplyMsg struct {
 // and most of them will result in sending a failure response to the caller,
 // including a RemoteObjectError with suitable details.
 type Service struct {
-
-	srvIfcType reflect.Type
-	srvIfcValue reflect.Value
-	srvObjValue reflect.Value
-	isRunning bool
-	server net.Listener
-	lossy bool
-	port int
-	delayed bool
+	srvIfcType   reflect.Type
+	srvIfcValue  reflect.Value
+	srvObjValue  reflect.Value
+	isRunning    bool
+	server       net.Listener
+	lossy        bool
+	port         int
+	delayed      bool
 	runningMutex sync.Mutex
 
 	// TODO: populate with needed contents including, but not limited to:
@@ -245,56 +265,56 @@ type Service struct {
 // -- if neither error, creates and populates a Service and returns a pointer
 func NewService(ifc interface{}, sobj interface{}, port int, lossy bool, delayed bool) (*Service, error) {
 
-	if ifc == nil{
-		return nil, errors.New("Cannot be nil")
-	}else if sobj == nil{
-		return nil, errors.New("Cannot be nil")
+	if ifc == nil {
+		return nil, errors.New("cannot be nil")
+	} else if sobj == nil {
+		return nil, errors.New("cannot be nil")
 	}
 
 	ifcType := reflect.TypeOf(ifc).Elem()
 	for i := 0; i < ifcType.NumField(); i++ {
-        methodType := ifcType.Field(i).Type
-	
+		methodType := ifcType.Field(i).Type
+
 		hasRemoteObjectError := false
-            for j := 0; j < methodType.NumOut(); j++ {
-                returnType := methodType.Out(j)
-                if returnType.Kind() == reflect.Struct && returnType.Name() == "RemoteObjectError" {
-                    hasRemoteObjectError = true
-                    break
-                }
-            }
+		for j := 0; j < methodType.NumOut(); j++ {
+			returnType := methodType.Out(j)
+			if returnType.Kind() == reflect.Struct && returnType.Name() == "RemoteObjectError" {
+				hasRemoteObjectError = true
+				break
+			}
+		}
 		if !hasRemoteObjectError {
-			return nil, errors.New("Doesn't not return RemotObjectError")
+			return nil, errors.New("doesn't not return RemotObjectError")
 		}
 	}
 
 	s := &Service{
-		srvIfcType: reflect.TypeOf(ifc),
+		srvIfcType:  reflect.TypeOf(ifc),
 		srvIfcValue: reflect.ValueOf(ifc),
 		srvObjValue: reflect.ValueOf(sobj),
-		lossy: lossy,
-		delayed: delayed,
-		port: port,
+		lossy:       lossy,
+		delayed:     delayed,
+		port:        port,
 	}
 	return s, nil
 
-        // Check if method name matches BadInterface.Method
-        // if ifcType.Field(i).Name == "Method" {
-        //     // Check method return type using reflect.FuncOf
-        //     if methodType.Kind() != reflect.Func || methodType.NumOut() != 2 || methodType.Out(1).Kind() != reflect.String {
-        //         return nil, errors.New("interface contains invalid 'Method' signature. It should return (int, string)")
-        //     }
-        // } else {
-        //     // Check other method signatures as you did before
-        //     methodName := ifcType.Field(i).Name
-        //     method := ifcValue.MethodByName(methodName)
-        //     if !method.IsValid() {
-        //         return nil, errors.New("method " + methodName + " not found on service object")
-        //     }
-        //     if method.Type() != methodType {
-        //         return nil, errors.New("method " + methodName + " signature mismatch")
-        //     }
-        // }
+	// Check if method name matches BadInterface.Method
+	// if ifcType.Field(i).Name == "Method" {
+	//     // Check method return type using reflect.FuncOf
+	//     if methodType.Kind() != reflect.Func || methodType.NumOut() != 2 || methodType.Out(1).Kind() != reflect.String {
+	//         return nil, errors.New("interface contains invalid 'Method' signature. It should return (int, string)")
+	//     }
+	// } else {
+	//     // Check other method signatures as you did before
+	//     methodName := ifcType.Field(i).Name
+	//     method := ifcValue.MethodByName(methodName)
+	//     if !method.IsValid() {
+	//         return nil, errors.New("method " + methodName + " not found on service object")
+	//     }
+	//     if method.Type() != methodType {
+	//         return nil, errors.New("method " + methodName + " signature mismatch")
+	//     }
+	// }
 
 	// if ifc is a pointer to a struct with function declarations,
 	// then reflect.TypeOf(ifc).Elem() is the reflected struct's Type
@@ -337,7 +357,6 @@ func (serv *Service) Start() error {
 		serv.isRunning = false
 	}()
 
-
 	// TODO: attempt to start a Service created using NewService
 	//
 	// if called on a service that is already running, print a warning
@@ -377,37 +396,35 @@ func (serv *Service) Start() error {
 	return nil
 }
 
-func listenConnections(serv *Service, shutdown <- chan bool) {
+func listenConnections(serv *Service, shutdown <-chan bool) {
 	for {
 		select {
 		case <-shutdown:
-		  return
+			return
 		default:
-		  conn, err := serv.server.Accept()
-		  if err != nil {
-			// fmt.Println("Error Accepting connection: ", err)
-			continue
-		  }
-		  ls := NewLeakySocket(conn, serv.lossy, serv.delayed)
-		  go handleClient(ls, serv)
+			conn, err := serv.server.Accept()
+			if err != nil {
+				// fmt.Println("Error Accepting connection: ", err)
+				continue
+			}
+			ls := NewLeakySocket(conn, serv.lossy, serv.delayed)
+			go handleClient(ls, serv)
 		}
 	}
 }
 
-
-
-func handleClient(ls *LeakySocket, serv *Service){
+func handleClient(ls *LeakySocket, serv *Service) {
 	// receive a byte-string on `ls` using `ls.RecvObject()
 	data, err := ls.RecvObject()
 	if err != nil {
 		fmt.Println("Error receiving data: ", err)
 		return
 	}
-	
+
 	var reqMsg RequestMsg
 	decoder := gob.NewDecoder(bytes.NewReader(data))
 	err = decoder.Decode(&reqMsg)
-	if err != nil{
+	if err != nil {
 		return
 	}
 
@@ -423,22 +440,22 @@ func handleClient(ls *LeakySocket, serv *Service){
 	}
 	result := method.Call(args)
 	fmt.Println("I am here 2")
-	if len(result) != 2{
+	if len(result) != 2 {
 		fmt.Println("Error")
 		return
 	}
 	var buffer bytes.Buffer
-    encoder := gob.NewEncoder(&buffer) 
+	encoder := gob.NewEncoder(&buffer)
 
-    err1 := encoder.Encode(result) 
-    if err1 != nil {
+	err1 := encoder.Encode(result)
+	if err1 != nil {
 		fmt.Println("error")
-        return
-    }
+		return
+	}
 
-    replyData := buffer.Bytes()
+	replyData := buffer.Bytes()
 
-    ls.SendObject(replyData)
+	ls.SendObject(replyData)
 
 }
 
@@ -456,6 +473,23 @@ func (serv *Service) Stop() {
 	serv.server.Close()
 	serv.isRunning = false
 	// TODO: stop the Service, change state accordingly, clean up any resources
+}
+
+func deserialize(decoder *gob.Decoder, elemName reflect.Value, ls *LeakySocket) error {
+	// 1. Decode the actual data into the element
+	err := decoder.Decode(elemName.Addr().Interface())
+	if err != nil {
+		return fmt.Errorf("error decoding element value: %w", err)
+	}
+
+	// 2. Check if the return type is a struct named "RemoteObjectError"
+	if elemName.Kind() == reflect.Struct && elemName.Type().Name() == "RemoteObjectError" {
+		// Handle potential error returned from the remote method
+		return nil // or handle the error based on your needs (e.g., return the error)
+	}
+
+	// 3. No error or special case, return nil
+	return nil
 }
 
 // StubFactory -- make a client-side stub
@@ -477,8 +511,7 @@ func (serv *Service) Stop() {
 //
 //	populate their function definitions with the required stub functionality
 func StubFactory(ifc interface{}, adr string, lossy bool, delayed bool) error {
-
-	if ifc == nil{
+	if ifc == nil {
 		return errors.New("ifc cannot be nil")
 	}
 
@@ -486,137 +519,368 @@ func StubFactory(ifc interface{}, adr string, lossy bool, delayed bool) error {
 	ifcType := reflect.TypeOf(ifc).Elem()
 
 	for i := 0; i < ifcType.NumField(); i++ {
-        methodType := ifcType.Field(i).Type
-	
+		methodType := ifcType.Field(i).Type
+
 		hasRemoteObjectError := false
-            for j := 0; j < methodType.NumOut(); j++ {
-                returnType := methodType.Out(j)
-                if returnType.Kind() == reflect.Struct && returnType.Name() == "RemoteObjectError" {
-                    hasRemoteObjectError = true
-                    break
-                }
-            }
+		for j := 0; j < methodType.NumOut(); j++ {
+			returnType := methodType.Out(j)
+			if returnType.Kind() == reflect.Struct && returnType.Name() == "RemoteObjectError" {
+				hasRemoteObjectError = true
+				break
+			}
+		}
 		if !hasRemoteObjectError {
-			return errors.New("Doesn't not return RemotObjectError")
+			return errors.New("doesn't return RemoteObjectError")
 		}
 	}
 
 	for i := 0; i < ifcType.NumField(); i++ {
 		field := ifcType.Field(i)
 		methodName := field.Name
+		fmt.Println("methodName : ", methodName)
 
-		fn := func(args []reflect.Value)(results []reflect.Value){
+		methodFunc := func(args []reflect.Value) (results []reflect.Value) {
 			conn, err := net.Dial("tcp", adr)
 			if err != nil {
-				results = make([]reflect.Value, field.Type.NumOut())
-        		results[0] = reflect.Zero(field.Type.Out(0))
-        		results[1] = reflect.ValueOf(err.Error())
-        		return
-				// results = append(results, reflect.Zero(field.Type.Out(0)))
-				// results = append(results, reflect.ValueOf(RemoteObjectError{Err: err.Error()}))
-				// return 
+				fmt.Println("Error dialing:", err)
+
+				numOut := field.Type.NumOut()
+
+				var errArray []reflect.Value
+				for i := 0; i < numOut-1; i++ {
+					errArray = append(errArray, reflect.Zero(field.Type.Out(i)))
+				}
+				remoteError := RemoteObjectError{Err: "Connection failed"}
+				errArray = append(errArray, reflect.ValueOf(remoteError))
+				return errArray
 			}
-			defer conn.Close()
+			// defer conn.Close()
 
 			ls := NewLeakySocket(conn, lossy, delayed)
 
-			reqMsg := RequestMsg{
-				Method: methodName,
-				Args: args,
+			var buffer bytes.Buffer
+			encoder := gob.NewEncoder(&buffer)
+
+			methodN := reflect.ValueOf(field.Name)
+			if err := encoder.EncodeValue(methodN); err != nil {
+				fmt.Println("Error encoding method name:", err)
+			}
+			count := 0
+			for _, arg := range args {
+				count += 1
+				if err := encoder.EncodeValue(arg); err != nil {
+					fmt.Println("Error encoding argument", count, ":", err)
+				}
+			}
+			if err := encoder.Encode(count); err != nil {
+				fmt.Println("Error encoding count:", err)
+			}
+			fmt.Println("Here, there might be a bug")
+			fmt.Println("Buffer bytes : ", buffer.Bytes())
+			for {
+				sent, err := ls.SendObject(buffer.Bytes())
+				if err != nil {
+					return
+				}
+				if !sent {
+					fmt.Println("Error while sending the encoded message")
+					continue
+				} else {
+					fmt.Println("Sucessfully sent ")
+					break
+				}
+			}
+			fmt.Println("Recieving data from socket")
+			var data []byte
+			// data := make([]byte, 4096)
+			var err1 error
+			// data, err1 = ls.RecvObject()
+			// fmt.Println("data : ", data)
+			// fmt.Println("Error inside For loop : ", err1)
+			for {
+				fmt.Println("Inside for loop")
+				data, err1 = ls.RecvObject()
+				fmt.Println("data : ", data)
+				fmt.Println("Error inside For loop : ", err1)
+				if err1 != nil {
+					fmt.Println("Error recieving data : ", err1)
+					continue
+				}
+				if data == nil {
+					fmt.Println("No data recieved")
+					continue
+				} else {
+					break
+				}
 			}
 
-			var buf bytes.Buffer
-			encoder := gob.NewEncoder(&buf)
-			err = encoder.Encode(&reqMsg)
-			if err != nil {
+			buf := bytes.NewBuffer(data)
+			decoder := gob.NewDecoder(buf)
+			numOut := field.Type.NumOut()
+			var resultArray = make([]reflect.Value, numOut)
+			for i := 0; i < numOut; i++ {
+				currentReturnType := field.Type.Out(i)
+				var elemName reflect.Value = reflect.New(currentReturnType).Elem()
+				err := deserialize(decoder, elemName, ls)
+				if err != nil {
+					fmt.Errorf("failed to deserialize args name: %w", err)
+				}
+				resultArray[i] = elemName
 
-				results = make([]reflect.Value, field.Type.NumOut())
-				results[0] = reflect.Zero(field.Type.Out(0))
-				results[1] = reflect.ValueOf(err.Error())
-				return
-
-				// results = append(results, reflect.Zero(field.Type.Out(0)))
-				// results = append(results, reflect.ValueOf(RemoteObjectError{Err: err.Error()}))
-				// return
 			}
+			return resultArray
 
-			ls.SendObject(buf.Bytes())
-
-			respBytes, err := ls.RecvObject()
-			if err != nil {
-
-				results = make([]reflect.Value, field.Type.NumOut())
-				results[0] = reflect.Zero(field.Type.Out(0))
-				results[1] = reflect.ValueOf(err.Error())
-				return
-
-				// results = append(results, reflect.Zero(field.Type.Out(0)))
-				// results = append(results, reflect.ValueOf(RemoteObjectError{Err: err.Error()}))
-				// return
-			}
-
-			var resp ReplyMsg
-			decoder := gob.NewDecoder(bytes.NewReader(respBytes))
-			err = decoder.Decode(&resp)
-			if err != nil {
-
-				results = make([]reflect.Value, field.Type.NumOut())
-				results[0] = reflect.Zero(field.Type.Out(0))
-				results[1] = reflect.ValueOf(err.Error())
-				return
-
-				// results = append(results, reflect.Zero(field.Type.Out(0)))
-				// results = append(results, reflect.ValueOf(RemoteObjectError{Err: err.Error()}))
-				// return
-			}
-
-			if !resp.Success {
-
-				results = make([]reflect.Value, field.Type.NumOut())
-				results[0] = reflect.Zero(field.Type.Out(0))
-				results[1] = reflect.ValueOf(resp.Err.Error())
-				return
-
-				// results = append(results, reflect.Zero(field.Type.Out(0)))
-				// results = append(results, reflect.ValueOf(resp.Err))
-				// return
-			}
-			// results = append(results, resp.Reply...)
-    		// results = append(results, reflect.ValueOf(resp.Err))
-			// return results
-
-			results = make([]reflect.Value, field.Type.NumOut())
-			results[0] = resp.Reply[0]
-			results[1] = reflect.ValueOf("")
-			return results
-
+			// fmt.Println("Could not find the desired value")
+			// return nil
 		}
-		ifcValue.Field(i).Set(reflect.MakeFunc(field.Type, fn))
+
+		funcValue := reflect.MakeFunc(field.Type, methodFunc)
+		ifcValue.Field(i).Set(funcValue)
 	}
 
-	// if ifc is a pointer to a struct with function declarations,
-	// then reflect.TypeOf(ifc).Elem() is the reflected struct's reflect.Type
-	// and reflect.ValueOf(ifc).Elem() is the reflected struct's reflect.Value
-	//
-	// Here's what it needs to do (not strictly in this order):
-	//
-	//    1. create a request message populated with the method name and input
-	//       arguments to send to the Service
-	//
-	//    2. create a []reflect.Value of correct size to hold the result to be
-	//       returned back to the program
-	//
-	//    3. connect to the Service's tcp server, and wrap the connection in an
-	//       appropriate LeakySocket using the parameters given to the StubFactory
-	//
-	//    4. encode the request message into a byte-string to send over the connection
-	//
-	//    5. send the encoded message, noting that the LeakySocket is not guaranteed
-	//       to succeed depending on the given parameters
-	//
-	//    6. wait for a reply to be received using RecvObject, which is blocking
-	//        -- if RecvObject returns an error, populate and return error output
-	//
-	//    7. decode the received byte-string according to the expected return types
 	return nil
 }
+
+// func StubFactory(ifc interface{}, adr string, lossy bool, delayed bool) error {
+
+// 	if ifc == nil {
+// 		return errors.New("ifc cannot be nil")
+// 	}
+
+// 	// ifcValue := reflect.ValueOf(ifc).Elem()
+// 	ifcType := reflect.TypeOf(ifc).Elem()
+
+// 	for i := 0; i < ifcType.NumField(); i++ {
+// 		methodType := ifcType.Field(i).Type
+
+// 		hasRemoteObjectError := false
+// 		for j := 0; j < methodType.NumOut(); j++ {
+// 			returnType := methodType.Out(j)
+// 			if returnType.Kind() == reflect.Struct && returnType.Name() == "RemoteObjectError" {
+// 				hasRemoteObjectError = true
+// 				break
+// 			}
+// 		}
+// 		if !hasRemoteObjectError {
+// 			return errors.New("doesn't not return RemotObjectError")
+// 		}
+// 	}
+
+// 	// fmt.Println("IFCType : ", ifcType)
+// 	// fmt.Println("Number of ifcType : ", ifcType.NumField())
+
+// 	for i := 0; i < ifcType.NumField(); i++ {
+// 		field := ifcType.Field(i)
+// 		fmt.Println("Field : ", field)
+// 		methodName := field.Name
+// 		fmt.Println("Method Name : ", methodName)
+
+// 		var args []reflect.Value
+// 		for j := 0; j < field.Type.NumIn(); j++ {
+// 			inputType := field.Type.In(j)
+// 			// fmt.Printf("Input %d: %s\n", j, inputType)
+
+// 			args = append(args, reflect.ValueOf(inputType))
+// 			fmt.Println("reflect value : ", args[i])
+// 		}
+
+// 		reqMsg := RequestMsg{
+// 			Method: methodName,
+// 			Args:   args,
+// 		}
+
+// 		results := make([]reflect.Value, 0, field.Type.NumOut())
+// 		for j := 0; j < field.Type.NumOut(); j++ {
+// 			outputType := field.Type.Out(j)
+// 			// fmt.Printf("Output %d: %s\n", j, outputType)
+// 			results = append(results, reflect.New(outputType).Elem())
+// 		}
+// 		fmt.Println("HEre 11111111111111111111111")
+
+// 		conn, err := net.Dial("tcp", adr)
+// 		if err != nil {
+// 			return err
+// 		}
+
+// 		defer conn.Close()
+
+// 		ls := NewLeakySocket(conn, lossy, delayed)
+// 		fmt.Println("Leaky socket created")
+
+// 		var buffer bytes.Buffer
+// 		encoder := gob.NewEncoder(&buffer)
+// 		err1 := encoder.Encode(reqMsg)
+// 		if err1 != nil {
+// 			fmt.Println("Here ===============", err1)
+// 			return errors.New("error while encoding")
+// 		}
+// 		encodedReqMsg := buffer.Bytes()
+
+// 		fmt.Println("Encoded Request Message created")
+// 		ls.SendObject(encodedReqMsg)
+
+// 		recvData, err := ls.RecvObject()
+// 		fmt.Println("recieved Data : ", recvData)
+// 		if err != nil {
+// 			return errors.New("error while recieving from connection")
+// 		}
+
+// 		var repMsg ReplyMsg
+// 		decoder := gob.NewDecoder(bytes.NewReader(recvData))
+// 		err = decoder.Decode(&repMsg)
+// 		if err != nil {
+// 			return errors.New("error decoding")
+// 		}
+// 		fmt.Println("Results: ", repMsg.Reply)
+// 	}
+
+// 	return nil
+// }
+
+// 	// if ifc is a pointer to a struct with function declarations,
+// 	// then reflect.TypeOf(ifc).Elem() is the reflected struct's reflect.Type
+// 	// and reflect.ValueOf(ifc).Elem() is the reflected struct's reflect.Value
+// 	//
+// 	// Here's what it needs to do (not strictly in this order):
+// 	//
+// 	//    1. create a request message populated with the method name and input
+// 	//       arguments to send to the Service
+// 	//
+// 	//    2. create a []reflect.Value of correct size to hold the result to be
+// 	//       returned back to the program
+// 	//
+// 	//    3. connect to the Service's tcp server, and wrap the connection in an
+// 	//       appropriate LeakySocket using the parameters given to the StubFactory
+// 	//
+// 	//    4. encode the request message into a byte-string to send over the connection
+// 	//
+// 	//    5. send the encoded message, noting that the LeakySocket is not guaranteed
+// 	//       to succeed depending on the given parameters
+// 	//
+// 	//    6. wait for a reply to be received using RecvObject, which is blocking
+// 	//        -- if RecvObject returns an error, populate and return error output
+// 	//
+// 	//    7. decode the received byte-string according to the expected return types
+// 	return nil
+// }
+
+// if ifc == nil {
+// 		return fmt.Errorf("ifc is nil")
+// 	}
+
+// 	ifcType := reflect.TypeOf(ifc).Elem()
+// 	ifcValue := reflect.ValueOf(ifc).Elem()
+
+// 	if ifcType.NumField() != 0 {
+// 		for i := 0; i < ifcType.NumField(); i++ {
+// 			field := ifcType.Field(i)
+// 			if field.Type.Kind() == reflect.Func {
+// 				numOut := field.Type.NumOut()
+// 				lastReturnType := field.Type.Out(numOut - 1)
+// 				if lastReturnType != reflect.TypeOf((*RemoteObjectError)(nil)).Elem() {
+// 					return fmt.Errorf("fields / methods now after validation that the struct indeed contains fields of kind functions does not return roe")
+// 				}
+// 			} else {
+// 				return fmt.Errorf("the interface maybe initialized as a struct or doesnt contain any methods. please check what is being passed. pass an interface with undefined methods")
+// 			}
+// 		}
+// 	} else {
+// 		return fmt.Errorf("interface (struct apparently) type doesnt contain any methods")
+// 	}
+
+// 	// 3. connect to the Service's tcp server, and wrap the connection in an
+// 	// appropriate LeakySocket using the parameters given to the StubFactory
+
+// 	for i := 0; i < ifcType.NumField(); i++ {
+// 		Field := ifcType.Field(i)
+// 		FieldName := Field.Name
+// 		dynamicFuncCalledByStub := reflect.MakeFunc(Field.Type, func(args []reflect.Value) (results []reflect.Value) {
+// 			var buffer bytes.Buffer
+// 			conn, err := net.Dial("tcp", adr)
+// 			fmt.Println(adr)
+// 			if err != nil {
+// 				fmt.Printf("failed to connect to service: %v", err)
+// 				numOut := Field.Type.NumOut()
+// 				var errArray []reflect.Value
+// 				for i := 0; i < numOut-1; i++ {
+// 					errArray = append(errArray, reflect.Zero(Field.Type.Out(i)))
+// 				}
+// 				remoteError := RemoteObjectError{Err: "Connection failed"}
+// 				errArray = append(errArray, reflect.ValueOf(remoteError))
+// 				return errArray
+// 			}
+// 			ls := NewLeakySocket(conn, lossy, delayed)
+// 			encoder := gob.NewEncoder(&buffer)
+// 			methodName := reflect.ValueOf(FieldName)
+
+// 			if err := encoder.EncodeValue(methodName); err != nil {
+// 				fmt.Print("Err me name")
+// 			}
+// 			count := 0
+// 			for _, arg := range args {
+// 				count += 1
+// 				if err := encoder.EncodeValue(arg); err != nil {
+// 					fmt.Print("Err me name1")
+// 				}
+// 			}
+// 			if err := encoder.Encode(count); err != nil {
+// 				fmt.Print("Err me name2")
+// 			}
+
+// 			for {
+// 				sent, err := ls.SendObject(buffer.Bytes())
+// 				if err != nil {
+// 					return
+// 				}
+// 				if !sent {
+// 					continue
+// 				} else {
+// 					break
+// 				}
+// 			}
+// 			var data []byte
+// 			var err2 error
+// 			for {
+// 				data, err2 = ls.RecvObject()
+// 				if err2 != nil {
+// 					continue
+// 				}
+
+// 				if data == nil {
+// 					continue
+// 				} else {
+// 					break
+// 				}
+// 			}
+
+// 			buf := bytes.NewBuffer(data)
+// 			if err != nil {
+// 				fmt.Errorf("failed to receive Arg data: %w", err)
+// 			}
+
+// 			decoder := gob.NewDecoder(buf)
+
+// 			field, err1 := ifcType.FieldByName(FieldName)
+// 			if !err1 {
+// 				fmt.Print("Err getting method")
+// 			}
+
+// 			numOut := field.Type.NumOut()
+// 			var resArray []reflect.Value = make([]reflect.Value, numOut)
+// 			for i := 0; i < numOut; i++ {
+// 				// Receive serialized data
+// 				currReturnType := field.Type.Out(i)
+// 				var elemName reflect.Value = reflect.New(currReturnType).Elem()
+// 				// Deserialize data into a string
+// 				err := deserialize(decoder, elemName, ls)
+// 				if err != nil {
+// 					fmt.Errorf("failed to deserialize args name: %w", err)
+// 				}
+// 				resArray[i] = elemName
+// 			}
+// 			return resArray
+// 		})
+// 		ifcValue.FieldByName(FieldName).Set(dynamicFuncCalledByStub)
+// 	}
+// 	return nil
+// }

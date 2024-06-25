@@ -26,6 +26,36 @@ checkpoint-race: build
 
 all-race: build
 	cd src/$(PKGNAME); go test --timeout 60s -v -race 
+
+
+
+ServiceInterface: build
+	cd src/$(PKGNAME); go test -v -run TestCheckpoint_ServiceInterface
+
+ServiceRuns: build
+	cd src/$(PKGNAME); go test -v -run TestCheckpoint_ServiceRuns
+
+StubInterface: build
+	cd src/$(PKGNAME); go test -v -run TestFinal_StubInterface
+
+StubConnects: build
+	cd src/$(PKGNAME); go test -v -run TestFinal_StubConnects
+
+Connection: build
+	cd src/$(PKGNAME); go test -v -run TestFinal_Connection
+
+LossyConnection: build
+	cd src/$(PKGNAME); go test -v -run TestFinal_LossyConnection
+
+Reconnection: build
+	cd src/$(PKGNAME); go test -v -run TestFinal_LossyConnection
+
+Multithread: build
+	cd src/$(PKGNAME); go test -v -run TestFinal_Multithread
+
+Mismatch: build
+	cd src/$(PKGNAME); go test -v -run TestFinal_Mismatch 
+
     
 # delete executable and docs, leaving only source
 clean:
