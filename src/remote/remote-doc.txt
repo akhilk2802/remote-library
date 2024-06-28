@@ -1,0 +1,149 @@
+package remote // import "akhilk2802/rpc/src/remote"
+
+
+FUNCTIONS
+
+func StubFactory(ifc interface{}, adr string, lossy bool, delayed bool) error
+    StubFactory -- make a client-side stub
+
+    StubFactory uses reflection to populate the interface functions to
+    create the caller's stub interface. Only works if all functions are
+    exported/public. Once created, the interface masks remote calls to a
+    Service that hosts the object instance that the functions are invoked on.
+    The network address of the remote Service must be provided with the
+    stub is created, and it may not change later. A call to StubFactory
+    requires the following inputs: -- a struct of function declarations to
+    act as the stub's interface/proxy -- the remote address of the Service
+    as "<ip-address>:<port-number>" -- indicator of whether caller-to-callee
+    channel has emulated packet loss -- indicator of whether caller-to-callee
+    channel has emulated propagation delay performs the following: -- returns
+    a local error if function struct is nil -- returns a local error if any
+    function in the struct is not a remote function -- otherwise, uses relection
+    to access the functions in the given struct and
+
+        populate their function definitions with the required stub functionality
+
+func deserialize(decoder *gob.Decoder, elemName reflect.Value, ls *LeakySocket) error
+func handleClient(ls *LeakySocket, serv *Service)
+func listenConnections(serv *Service, shutdown <-chan bool)
+
+TYPES
+
+type LeakySocket struct {
+	s         net.Conn
+	isLossy   bool
+	lossRate  float32
+	msTimeout int
+	usTimeout int
+	isDelayed bool
+	msDelay   int
+	usDelay   int
+}
+    LeakySocket
+
+    LeakySocket is a wrapper for a net.Conn connection that emulates
+    transmission delays and random packet loss. it has its own send and
+    receive functions that together mimic an unreliable connection that can be
+    customized to stress-test remote service interactions.
+
+func NewLeakySocket(conn net.Conn, lossy bool, delayed bool) *LeakySocket
+    builder for a LeakySocket given a normal socket and indicators of whether
+    the connection should experience loss and delay. uses default loss and delay
+    values that can be changed using setters.
+
+func (ls *LeakySocket) Close() error
+    close the socket (can also be done on original net.Conn passed to builder)
+
+func (ls *LeakySocket) RecvObject() ([]byte, error)
+    receive a byte-string over the socket connection. no significant change to
+    normal socket receive.
+
+func (ls *LeakySocket) SendObject(obj []byte) (bool, error)
+    send a byte-string over the socket mimicking unreliability. delay is
+    emulated using time.Sleep, packet loss is emulated using RNG coupled with
+    time.Sleep to emulate a timeout
+
+func (ls *LeakySocket) SetDelay(delayed bool, ms int, us int)
+    enable/disable emulated transmission delay and/or change the delay parameter
+
+func (ls *LeakySocket) SetLossRate(lossy bool, rate float32)
+    enable/disable emulated packet loss and/or change the loss rate
+
+func (ls *LeakySocket) SetTimeout(ms int, us int)
+    change the emulated timeout period used with packet loss
+
+type RemoteObjectError struct {
+	Err string
+}
+    RemoteObjectError
+
+    RemoteObjectError is a custom error type used for this library to identify
+    remote methods. it is used by both caller and callee endpoints.
+
+func (e *RemoteObjectError) Error() string
+    getter for the error message included inside the custom error type
+
+type ReplyMsg struct {
+	Success bool
+	Reply   []reflect.Value
+	Err     RemoteObjectError
+}
+    ReplyMsg (this is only a suggestion, can be changed)
+
+    ReplyMsg represents the reply message sent from callee back to caller in
+    response to a RequestMsg. it similarly uses reflection to carry arbitrary
+    return types along with a success indicator to tell the caller whether the
+    call was correctly handled by the callee. also includes a RemoteObjectError
+    to specify details of any encountered failure.
+
+type RequestMsg struct {
+	Method string
+	Args   []reflect.Value
+}
+    RequestMsg (this is only a suggestion, can be changed)
+
+    RequestMsg represents the request message sent from caller to callee. it
+    is used by both endpoints, and uses the reflect package to carry arbitrary
+    argument types across the network.
+
+type Service struct {
+	srvIfcType   reflect.Type
+	srvIfcValue  reflect.Value
+	srvObjValue  reflect.Value
+	isRunning    bool
+	server       net.Listener
+	lossy        bool
+	port         int
+	delayed      bool
+	runningMutex sync.Mutex
+}
+    Service -- server side stub/skeleton
+
+    A Service encapsulates a multithreaded TCP server that manages a single
+    remote object on a single TCP port, which is a simplification to ease
+    management of remote objects and interaction with callers. Each Service is
+    built around a single struct of function declarations. All remote calls are
+    handled synchronously, meaning the lifetime of a connection is that of a
+    sinngle method call. A Service can encounter a number of different issues,
+    and most of them will result in sending a failure response to the caller,
+    including a RemoteObjectError with suitable details.
+
+func NewService(ifc interface{}, sobj interface{}, port int, lossy bool, delayed bool) (*Service, error)
+    build a new Service instance around a given struct of supported functions, a
+    local instance of a corresponding object that supports these functions, and
+    arguments to support creation and use of LeakySocket-wrapped connections.
+    performs the following: -- returns a local error if function struct or
+    object is nil -- returns a local error if any function in the struct is not
+    a remote function -- if neither error, creates and populates a Service and
+    returns a pointer
+
+func (serv *Service) GetCount() int
+
+func (serv *Service) IsRunning() bool
+
+func (serv *Service) Start() error
+    start the Service's tcp listening connection, update the Service status,
+    and start receiving caller connections
+
+func (serv *Service) Stop()
+

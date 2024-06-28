@@ -11,6 +11,7 @@
 package remote
 
 import (
+	"fmt"
 	"math/rand"
 	"net"
 	"strconv"
@@ -249,7 +250,7 @@ func TestFinal_StubConnects(t *testing.T) {
 	if srvc == nil {
 		t.Fatalf("NewService returned nil service")
 	}
-	
+
 	err = srvc.Start()
 	if err != nil {
 		t.Fatalf("Error in Service.start(): %s", err.Error())
@@ -266,14 +267,14 @@ func TestFinal_StubConnects(t *testing.T) {
 
 	// create the stub, should work if previous test passed
 	stub := &SimpleInterface{}
-	
+
 	err = StubFactory(stub, addr, false, false)
 	if err != nil {
 		t.Fatalf("StubFactory failed to create service proxy from interface")
 	}
-	
+
 	stub.Method(1, false)
-	
+
 }
 
 // TestFinal_Connection -- tests complete connection between stub and service,
@@ -316,6 +317,9 @@ func TestFinal_Connection(t *testing.T) {
 
 	// Attempt to get a value from the stub.
 	i, e, r := stub.Method(1, false)
+	fmt.Println("i : ", i)
+	fmt.Println("e : ", e)
+	fmt.Println("r : ", r)
 	if i != 1 || e != "" || r.Error() != "" {
 		t.Fatalf("Stub returned an incorrect result for argument false")
 	}
